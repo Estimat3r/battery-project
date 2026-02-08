@@ -319,16 +319,22 @@ with tab_rev:
             <b>Impurity Removal</b><br>
             <span style="font-size:12px; color:#8B949E">Target: Al, Cu Elimination</span>
         </div>""", unsafe_allow_html=True)
+        
     with a1:
-        st.markdown("<div class="arrow">→</div>", unsafe_allow_html=True)
+        # [수정 완료] 큰따옴표(") 충돌 방지를 위해 작은따옴표(') 사용
+        st.markdown('<div class="arrow">→</div>', unsafe_allow_html=True)
+        
     with c2:
         st.markdown("""<div class="process-box">
             <h4 style="color:#2E9AFE">Step 2</h4>
             <b>Cobalt Extraction</b><br>
             <span style="font-size:12px; color:#8B949E">Target: Co(OH)2 Precipitation</span>
         </div>""", unsafe_allow_html=True)
+        
     with a2:
-        st.markdown("<div class="arrow">→</div>", unsafe_allow_html=True)
+        # [수정 완료] 여기도 똑같이 수정했습니다!
+        st.markdown('<div class="arrow">→</div>', unsafe_allow_html=True)
+        
     with c3:
         st.markdown("""<div class="process-box">
             <h4 style="color:#2E9AFE">Step 3</h4>

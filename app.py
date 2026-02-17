@@ -48,7 +48,7 @@ TRANSLATIONS = {
         'guide_desc': """
         **1. 공정 시뮬레이션 (Forward):** 왼쪽 사이드바에서 pH와 온도를 조절하여 실시간 수익성을 예측하세요.
         **2. 목표 역설계 (Reverse):** 원하는 순도와 회수율을 입력하면 AI가 최적의 조건을 찾아줍니다.
-        **3. 변수 고정:** 역설계 시 특정 변수(예: 온도 80도)를 고정하고 싶다면 체크박스를 켜세요.
+        **3. 순도 페널티:** 순도가 낮을수록 등급(Battery/Technical/Crude/Scrap)에 따라 판매 가격이 차등 적용됩니다.
         """
     },
     'en': {
@@ -91,7 +91,7 @@ TRANSLATIONS = {
         'guide_desc': """
         **1. Forward Simulation:** Adjust pH & Temp in the sidebar to predict real-time profitability.
         **2. Reverse Engineering:** Set your target purity & yield, and let AI find the best recipe.
-        **3. Constraints:** Check the box to lock specific variables (e.g., fixed Temp at 80°C).
+        **3. Purity Penalty:** Sales price is adjusted based on purity grade (Battery/Technical/Crude/Scrap).
         """
     }
 }
@@ -116,7 +116,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. 데이터 로딩 & 계산 엔진
+# 3. 데이터 로딩 & 계산 엔진 (로직 업그레이드)
 # ==========================================
 @st.cache_data
 def load_models():
@@ -136,20 +136,41 @@ models = load_models()
 
 def calculate_process(ph1, ph2, temp, models):
     f_al_rem, f_co_loss, f_co_rec, f_li_rec = models
-    al_purity = float(f_al_rem(ph1))
-    co_loss_pct = float(f_co_loss(ph1))
-    co_rec_raw = float(f_co_rec(ph2))
-    li_rec_raw = float(f_li_rec(temp))
     
+    # 1. 공정 효율 예측
+    al_purity = float(f_al_rem(ph1))        # 불순물 제거율 (순도 지표)
+    co_loss_pct = float(f_co_loss(ph1))     # 코발트 손실률
+    co_rec_raw = float(f_co_rec(ph2))       # 코발트 회수율
+    li_rec_raw = float(f_li_rec(temp))      # 리튬 회수율
+    
+    # 2. 최종 수율 계산
     final_co_yield = (100 - co_loss_pct) * (co_rec_raw / 100)
     final_li_yield = li_rec_raw 
     
+    # 3. 운영 비용 (OPEX)
     chem_cost = ((abs(ph1 - 7.0)) + (abs(ph2 - 7.0))) * 8.0 
     energy_cost = (temp - 25) * 3.5
     total_cost = chem_cost + energy_cost
     
-    revenue = (final_co_yield * 1.65) + (final_li_yield * 0.675)
+    # [핵심 수정] 4. 등급별 차등 가격 정책 (Tiered Pricing Model)
+    # 현실 반영: 순도가 60~70%여도 '중간재(Intermediate)'로서 가치는 인정받음.
+    
+    if al_purity >= 99.0:
+        quality_factor = 1.0    # [Battery Grade] 제값 받음
+    elif al_purity >= 85.0:
+        quality_factor = 0.85   # [Technical Grade] 15% 감가 (정제비)
+    elif al_purity >= 60.0:
+        quality_factor = 0.50   # [Crude Intermediate] 50% 감가 (재처리 필요)
+    else:
+        quality_factor = 0.20   # [Scrap/Waste] 80% 감가 (폐기물 수준)
+        
+    # 매출 계산 (품질 계수 적용)
+    # Co: $11,000, Li: $13,500
+    revenue = (final_co_yield * 1.65 * quality_factor) + (final_li_yield * 0.675 * quality_factor)
+    
+    # 순이익
     net_profit = (revenue * 100) - total_cost
+    
     return net_profit, final_co_yield, final_li_yield, al_purity, total_cost
 
 def generate_time_series(profit, efficiency, hours=10):
@@ -159,9 +180,8 @@ def generate_time_series(profit, efficiency, hours=10):
     return time_index, profit_trend, eff_trend
 
 # ==========================================
-# 4. UI 구성 (언어 선택 적용)
+# 4. UI 구성
 # ==========================================
-# 사이드바에서 언어 선택
 lang_choice = st.sidebar.radio("🌐 Language / 언어", ["한국어", "English"])
 lang = 'ko' if lang_choice == "한국어" else 'en'
 t = TRANSLATIONS[lang]
@@ -198,11 +218,17 @@ with tab_fwd:
         t3 = st.slider("Temperature (°C)", 25, 95, 90, 5, key="fwd_t3", help=t['step3_help'])
         st.caption(t['step3_caption'])
         
-        # 현재 설정 계산
         profit, co_y, li_y, purity, cost = calculate_process(p1, p2, t3, models)
         avg_eff = (co_y + li_y) / 2
         
         st.markdown("---")
+        
+        # 순도에 따른 경고 메시지 표시
+        if purity < 60.0:
+            st.error("⚠️ Low Purity: Product downgraded to Scrap (20% value).")
+        elif purity < 85.0:
+            st.warning("⚠️ Medium Purity: Crude Intermediate (50% value).")
+        
         st.info(f"💰 {t['result_profit']}: **${profit:,.0f}**")
 
     with col_main:
@@ -217,14 +243,17 @@ with tab_fwd:
         st.markdown(f"##### {t['graph_eff']}")
         fig_eff = go.Figure()
         fig_eff.add_trace(go.Scatter(x=hours, y=eff_data, mode='lines+markers', line=dict(color='#2E9AFE', width=2)))
-        fig_eff.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#C9D1D9'), height=200, margin=dict(l=20,r=20,t=10,b=20), yaxis=dict(range=[80, 100]))
+        fig_eff.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#C9D1D9'), height=200, margin=dict(l=20,r=20,t=10,b=20), yaxis=dict(range=[0, 105]))
         st.plotly_chart(fig_eff, use_container_width=True)
         
         st.markdown(f"##### {t['summary_header']}")
         c1, c2, c3 = st.columns(3)
         with c1: st.markdown(f"""<div class="metric-card"><span style="color:#8B949E">{t['summary_rec']}</span><br><span class="big-font highlight-blue">{avg_eff:.1f}%</span></div>""", unsafe_allow_html=True)
         with c2: st.markdown(f"""<div class="metric-card"><span style="color:#8B949E">{t['summary_cost']}</span><br><span class="big-font" style="color:#FF5252">${cost:,.0f}</span></div>""", unsafe_allow_html=True)
-        with c3: st.markdown(f"""<div class="metric-card"><span style="color:#8B949E">{t['summary_grade']}</span><br><span class="big-font highlight-green">{purity:.2f}%</span></div>""", unsafe_allow_html=True)
+        
+        # 순도 색상 동적 변경
+        purity_color = "#00E676" if purity >= 90 else "#FF5252"
+        with c3: st.markdown(f"""<div class="metric-card"><span style="color:#8B949E">{t['summary_grade']}</span><br><span class="big-font" style="color:{purity_color}">{purity:.2f}%</span></div>""", unsafe_allow_html=True)
 
 # [TAB 2] Reverse Engineering
 with tab_rev:
@@ -253,9 +282,11 @@ with tab_rev:
         if btn_optimize:
             best_score = -9999
             best_res = None
-            space_p1 = [fixed_p1] if lock_p1 else np.linspace(3.5, 5.0, 5)
-            space_p2 = [fixed_p2] if lock_p2 else np.linspace(8.0, 10.0, 5)
-            space_t3 = [fixed_t3] if lock_t3 else [60, 70, 80, 90, 95]
+            
+            # [AI 탐색 정밀도 향상]
+            space_p1 = [fixed_p1] if lock_p1 else np.linspace(3.5, 5.5, 10)
+            space_p2 = [fixed_p2] if lock_p2 else np.linspace(7.0, 11.0, 10)
+            space_t3 = [fixed_t3] if lock_t3 else [25, 40, 60, 80, 90, 95]
             
             for sp1 in space_p1:
                 for sp2 in space_p2:
@@ -268,19 +299,19 @@ with tab_rev:
                                 best_res = (sp1, sp2, st3, pf, avg_rec, pu)
             
             if best_res:
-                st.markdown(f"""<div style="background-color: #161B22; border: 1px solid #00E676; border-radius: 10px; padding: 20px;"><h2 style="color:#00E676;">{t['rev_success']}</h2><hr style="border-color: #30363D;"><div style="display: flex; justify-content: space-around;"><div><p style="color:#8B949E; margin:0;">Impurity pH</p><h3 style="color:white;">{best_res[0]:.1f}</h3></div><div><p style="color:#8B949E; margin:0;">Cobalt pH</p><h3 style="color:white;">{best_res[1]:.1f}</h3></div><div><p style="color:#8B949E; margin:0;">Lithium Temp</p><h3 style="color:white;">{best_res[2]}°C</h3></div><div><p style="color:#8B949E; margin:0;">Profit</p><h3 style="color:#2E9AFE;">${best_res[3]:,.0f}</h3></div></div></div>""", unsafe_allow_html=True)
+                st.markdown(f"""<div style="background-color: #161B22; border: 1px solid #00E676; border-radius: 10px; padding: 20px;"><h2 style="color:#00E676;">{t['rev_success']}</h2><hr style="border-color: #30363D;"><div style="display: flex; justify-content: space-around;"><div><p style="color:#8B949E; margin:0;">Impurity pH</p><h3 style="color:white;">{best_res[0]:.2f}</h3></div><div><p style="color:#8B949E; margin:0;">Cobalt pH</p><h3 style="color:white;">{best_res[1]:.2f}</h3></div><div><p style="color:#8B949E; margin:0;">Lithium Temp</p><h3 style="color:white;">{best_res[2]}°C</h3></div><div><p style="color:#8B949E; margin:0;">Profit</p><h3 style="color:#2E9AFE;">${best_res[3]:,.0f}</h3></div></div></div>""", unsafe_allow_html=True)
                 
-                # --- [복구됨] 비교 분석 레이더 차트 (Comparative Analysis) ---
+                # Comparative Analysis
                 st.markdown(f"### {t['rev_chart_title']}")
                 categories = ['Profit', 'Purity', 'Recovery', 'Energy Save', 'Safety']
                 
-                # Tab 1에서 설정된 현재 값(Current Plan) 가져오기
                 curr_profit, curr_co, curr_li, curr_pur, curr_cost = calculate_process(p1, p2, t3, models)
                 curr_avg_rec = (curr_co + curr_li) / 2
                 
-                # 정규화 점수 계산 (시각화용)
-                current_scores = [min(curr_profit/200, 100), curr_pur, curr_avg_rec, 100-(curr_cost/10), 80]
-                ai_scores = [min(best_res[3]/200, 100), best_res[5], best_res[4], 100-(best_res[3]/200)+5, 95] # AI 점수는 약간 보정
+                def normalize(val, max_val): return max(0, min(val/max_val*100, 100))
+                
+                current_scores = [normalize(curr_profit, 20000), curr_pur, curr_avg_rec, normalize(1000-curr_cost, 1000), 80]
+                ai_scores = [normalize(best_res[3], 20000), best_res[5], best_res[4], normalize(1000-(best_res[3]/200), 1000), 95]
                 
                 fig_radar = go.Figure()
                 fig_radar.add_trace(go.Scatterpolar(r=current_scores, theta=categories, fill='toself', name='Current Plan (Tab 1)', line_color='#FF5252'))
@@ -288,7 +319,6 @@ with tab_rev:
                 
                 fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 100])), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#C9D1D9'), height=350)
                 st.plotly_chart(fig_radar, use_container_width=True)
-                # --------------------------------------------------------
 
             else:
                 st.error(t['rev_fail'])
